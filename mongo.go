@@ -2,8 +2,6 @@ package mongo
 
 import (
 	"context"
-	"os"
-
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
@@ -28,7 +26,7 @@ var DB = func(conf datasource.Config, logger datasource.Logger, metrics datasour
 	}
 
 	return &Client{
-		Database: m.Database(os.Getenv(conf.Get("MONGO_DATABASE"))),
+		Database: m.Database(conf.Get("MONGO_DATABASE")),
 		logger:   logger,
 		metrics:  metrics,
 	}
