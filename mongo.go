@@ -2,10 +2,10 @@ package mongo
 
 import (
 	"context"
+
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-
-	"gofr.dev/pkg/gofr/datasource"
 )
 
 type Client struct {
@@ -15,7 +15,7 @@ type Client struct {
 	metrics Metrics
 }
 
-var DB = func(conf datasource.Config, logger datasource.Logger, metrics datasource.Metrics) datasource.Mongo {
+func New(conf Config, logger Logger, metrics Metrics) *Client {
 	logger.Logf("using gofr-mongo as external DB for mongo")
 
 	m, err := mongo.Connect(context.Background(), options.Client().ApplyURI(conf.Get("MONGO_URI")))
@@ -32,146 +32,111 @@ var DB = func(conf datasource.Config, logger datasource.Logger, metrics datasour
 	}
 }
 
-func (c *Client) Clone(col string, opts ...*options.CollectionOptions) (*mongo.Collection, error) {
-	return c.Database.Collection(col).Clone(opts...)
+func (c *Client) InsertOne(ctx context.Context, collection string, document interface{}) (interface{}, error) {
+	c.logger.Debug("InsertOne")
+
+	return c.Database.Collection(collection).InsertOne(ctx, document)
 }
 
-func (c *Client) BulkWrite(ctx context.Context, collection string, models []datasource.WriteModel) (datasource.BulkWriteResult, error) {
-	mongoM := make([]mongo.WriteModel, 0)
-	for _, v := range models {
-		mongoM = append(mongoM, v.(mongo.WriteModel))
+func (c *Client) Find(ctx context.Context, collection string, filter interface{}, results interface{}) error {
+	c.logger.Debug("Find")
+
+	cur, err := c.Database.Collection(collection).Find(ctx, filter)
+	defer cur.Close(ctx)
+
+	if err != nil {
+		return err
 	}
 
-	res, err := c.Database.Collection(collection).BulkWrite(ctx, mongoM)
+	switch val := results.(type) {
+	default:
+		err = cur.All(ctx, &val)
+		if err != nil {
+			return err
+		}
+		results = val
+	}
 
-	return datasource.BulkWriteResult{
-		InsertedCount: res.InsertedCount,
-		MatchedCount:  res.MatchedCount,
-		ModifiedCount: res.ModifiedCount,
-		DeletedCount:  res.DeletedCount,
-		UpsertedCount: res.UpsertedCount,
-		UpsertedIDs:   res.UpsertedIDs,
-	}, err
+	return nil
 }
 
-func (c *Client) InsertOne(ctx context.Context, collection string, document interface{}) (datasource.InsertOneResult, error) {
-	res, err := c.Database.Collection(collection).InsertOne(ctx, document)
+func (c *Client) FindOne(ctx context.Context, collection string, filter interface{}, result interface{}) error {
+	c.logger.Debug("FindOne")
 
-	return datasource.InsertOneResult{InsertedID: res.InsertedID}, err
+	res := c.Database.Collection(collection).FindOne(ctx, filter)
+	if res.Err() != nil {
+		return res.Err()
+	}
+
+	b, err := res.Raw()
+	if err != nil {
+		return err
+	}
+
+	return bson.Unmarshal(b, result)
 }
 
-func (c *Client) InsertMany(ctx context.Context, col string, documents []interface{}) (datasource.InsertManyResult, error) {
-	res, err := c.Database.Collection(col).InsertMany(ctx, documents)
+func (c *Client) InsertMany(ctx context.Context, collection string, documents []interface{}) ([]interface{}, error) {
+	c.logger.Debug("InsertMany")
 
-	return datasource.InsertManyResult{InsertedIDs: res.InsertedIDs}, err
+	res, err := c.Database.Collection(collection).InsertMany(ctx, documents)
+	if err != nil {
+		return nil, err
+	}
+
+	return res.InsertedIDs, nil
 }
 
-func (c *Client) DeleteOne(ctx context.Context, col string, filter interface{}) (int64, error) {
-	res, err := c.Database.Collection(col).DeleteOne(ctx, filter)
+func (c *Client) DeleteOne(ctx context.Context, collection string, filter interface{}) (int64, error) {
+	c.logger.Debug("DeleteOne")
 
-	return res.DeletedCount, err
+	res, err := c.Database.Collection(collection).DeleteOne(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
+
+	return res.DeletedCount, nil
 }
 
-func (c *Client) DeleteMany(ctx context.Context, col string, filter interface{}) (int64, error) {
-	res, err := c.Database.Collection(col).DeleteMany(ctx, filter)
+func (c *Client) DeleteMany(ctx context.Context, collection string, filter interface{}) (int64, error) {
+	res, err := c.Database.Collection(collection).DeleteMany(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
 
-	return res.DeletedCount, err
+	return res.DeletedCount, nil
 }
 
-func (c *Client) UpdateByID(ctx context.Context, col string, id interface{}, update interface{}) (datasource.UpdateResult, error) {
-	res, err := c.Database.Collection(col).UpdateByID(ctx, id, update)
+func (c *Client) UpdateByID(ctx context.Context, collection string, id interface{}, update interface{}) (int64, error) {
+	c.logger.Debug("UpdateByID")
 
-	return datasource.UpdateResult{
-		MatchedCount:  res.MatchedCount,
-		ModifiedCount: res.ModifiedCount,
-		UpsertedCount: res.UpsertedCount,
-		UpsertedID:    res.UpsertedID,
-	}, err
+	res, err := c.Database.Collection(collection).UpdateByID(ctx, id, update)
+
+	return res.ModifiedCount, err
 }
 
-func (c *Client) UpdateOne(ctx context.Context, col string, filter interface{}, update interface{}) (datasource.UpdateResult, error) {
-	res, err := c.Database.Collection(col).UpdateOne(ctx, filter, update)
+func (c *Client) UpdateOne(ctx context.Context, collection string, filter interface{}, update interface{}) error {
+	c.logger.Debug("UpdateOne")
 
-	return datasource.UpdateResult{
-		MatchedCount:  res.MatchedCount,
-		ModifiedCount: res.ModifiedCount,
-		UpsertedCount: res.UpsertedCount,
-		UpsertedID:    res.UpsertedID,
-	}, err
+	_, err := c.Database.Collection(collection).UpdateOne(ctx, filter, update)
+
+	return err
 }
 
-func (c *Client) UpdateMany(ctx context.Context, collection string, filter interface{}, update interface{}) (datasource.UpdateResult, error) {
+func (c *Client) UpdateMany(ctx context.Context, collection string, filter interface{}, update interface{}) (int64, error) {
+	c.logger.Debug("updateMany")
+
 	res, err := c.Database.Collection(collection).UpdateMany(ctx, filter, update)
 
-	return datasource.UpdateResult{
-		MatchedCount:  res.MatchedCount,
-		ModifiedCount: res.ModifiedCount,
-		UpsertedCount: res.UpsertedCount,
-		UpsertedID:    res.UpsertedID,
-	}, err
+	return res.ModifiedCount, err
 }
 
-func (c *Client) ReplaceOne(ctx context.Context, col string, filter interface{}, replacement interface{}) (datasource.UpdateResult, error) {
-	res, err := c.Database.Collection(col).ReplaceOne(ctx, filter, replacement)
+func (c *Client) CountDocuments(ctx context.Context, collection string, filter interface{}) (int64, error) {
+	c.logger.Debug("CountDocuments")
 
-	return datasource.UpdateResult{
-		MatchedCount:  res.MatchedCount,
-		ModifiedCount: res.ModifiedCount,
-		UpsertedCount: res.UpsertedCount,
-		UpsertedID:    res.UpsertedID,
-	}, err
+	return c.Database.Collection(collection).CountDocuments(ctx, filter)
 }
 
-func (c *Client) Aggregate(ctx context.Context, col string, pipeline interface{}) (datasource.Cursor, error) {
-	return c.Database.Collection(col).Aggregate(ctx, pipeline)
-}
-
-func (c *Client) CountDocuments(ctx context.Context, col string, filter interface{}) (int64, error) {
-	return c.Database.Collection(col).CountDocuments(ctx, filter)
-}
-
-func (c *Client) EstimatedDocumentCount(ctx context.Context, col string) (int64, error) {
-	return c.Database.Collection(col).EstimatedDocumentCount(ctx)
-}
-
-func (c *Client) Distinct(ctx context.Context, col string, fieldName string, filter interface{}) ([]interface{}, error) {
-	return c.Database.Collection(col).Distinct(ctx, fieldName, filter)
-}
-
-func (c *Client) Find(ctx context.Context, col string, filter interface{}) (datasource.Cursor, error) {
-	cu, err := c.Database.Collection(col).Find(ctx, filter)
-
-	return cu, err
-}
-
-func (c *Client) FindOne(ctx context.Context, col string, filter interface{}) datasource.SingleResult {
-	return c.Database.Collection(col).FindOne(ctx, filter)
-}
-
-func (c *Client) FindOneAndDelete(ctx context.Context, col string, filter interface{}) datasource.SingleResult {
-	return c.Database.Collection(col).FindOneAndDelete(ctx, filter)
-}
-
-func (c *Client) FindOneAndReplace(ctx context.Context, col string, filter interface{}, replacement interface{}) datasource.SingleResult {
-	return c.Database.Collection(col).FindOneAndReplace(ctx, filter, replacement)
-}
-
-func (c *Client) FindOneAndUpdate(ctx context.Context, col string, filter interface{}, update interface{}) datasource.SingleResult {
-	return c.Database.Collection(col).FindOneAndUpdate(ctx, filter, update)
-}
-
-func (c *Client) Watch(ctx context.Context, col string, pipeline interface{}) (*mongo.ChangeStream, error) {
-	return c.Database.Collection(col).Watch(ctx, pipeline)
-}
-
-func (c *Client) Indexes(col string) mongo.IndexView {
-	return c.Database.Collection(col).Indexes()
-}
-
-func (c *Client) SearchIndexes(col string) mongo.SearchIndexView {
-	return c.Database.Collection(col).SearchIndexes()
-}
-
-func (c *Client) Drop(ctx context.Context, col string) error {
-	return c.Database.Collection(col).Drop(ctx)
+func (c *Client) Drop(ctx context.Context, collection string) error {
+	return c.Database.Collection(collection).Drop(ctx)
 }
