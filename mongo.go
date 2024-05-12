@@ -42,19 +42,13 @@ func (c *Client) Find(ctx context.Context, collection string, filter interface{}
 	c.logger.Debug("Find")
 
 	cur, err := c.Database.Collection(collection).Find(ctx, filter)
-	defer cur.Close(ctx)
-
 	if err != nil {
 		return err
 	}
+	defer cur.Close(ctx)
 
-	switch val := results.(type) {
-	default:
-		err = cur.All(ctx, &val)
-		if err != nil {
-			return err
-		}
-		results = val
+	if err := cur.All(ctx, results); err != nil {
+		return err
 	}
 
 	return nil
